@@ -5,6 +5,40 @@
 個人クリエイター向けのSNS運用・マーケティング自動化ツール「ContentPilot」の実装計画。
 X + Zenn + note を一元管理し、収益ファネルの可視化と記者AIによるコンテンツ品質担保を実現する。
 
+### アーキテクチャ方針：Web UI + MCP Server ハイブリッド構成
+
+本ツールは **2つのインターフェース** を持つ。
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    ContentPilot                      │
+│                                                     │
+│  ┌──────────────────┐    ┌───────────────────────┐  │
+│  │   Web UI (Next.js)│    │  MCP Server (CLI)     │  │
+│  │                  │    │                       │  │
+│  │  • ダッシュボード  │    │  • 記者エージェント    │  │
+│  │  • ファネル可視化  │    │  • メトリクス確認      │  │
+│  │  • UTMリンク管理  │    │  • UTMリンク生成       │  │
+│  │  • 設定          │    │  • パフォーマンス分析   │  │
+│  └────────┬─────────┘    └──────────┬────────────┘  │
+│           │                        │                │
+│           └────────┬───────────────┘                │
+│                    ▼                                │
+│            ┌──────────────┐                         │
+│            │   Supabase   │                         │
+│            │  (共有DB)    │                         │
+│            └──────────────┘                         │
+└─────────────────────────────────────────────────────┘
+```
+
+| インターフェース | 用途 | LLM費用 |
+|-----------------|------|---------|
+| **Web UI** | グラフ・チャートなどビジュアル重視の機能 | なし（表示のみ） |
+| **MCP Server** | AI対話が必要な機能、CLI操作 | ¥0（Claude Max内で動作） |
+
+MCP Server は Claude Code / claude.ai から呼び出され、LLMの推論はClaude Maxプランに含まれる。
+そのため **Claude API の従量課金が不要** になる。
+
 ---
 
 ## 技術スタック
@@ -16,7 +50,7 @@ X + Zenn + note を一元管理し、収益ファネルの可視化と記者AI�
 | Database | Supabase (PostgreSQL) | 無料枠、Auth/Storage/Edge Functions一体型 |
 | Auth | Supabase Auth | GitHub/Google OAuth対応、Row Level Security |
 | API | Next.js Route Handlers + Supabase Edge Functions | サーバーレス、定期実行にEdge Functions |
-| AI | Claude API (Anthropic) | 記者エージェント、コンテンツ生成 |
+| MCP Server | TypeScript (MCP SDK) | Claude Code / claude.ai との連携 |
 | Deploy | Vercel | Next.jsとの最適な統合、日本リージョン |
 | Cron | Supabase pg_cron / Vercel Cron | メトリクス定期収集 |
 
@@ -37,21 +71,18 @@ hiraku/
 │   │   │   ├── utm/            # UTMリンク管理
 │   │   │   ├── metrics/        # メトリクス閲覧
 │   │   │   ├── funnel/         # 収益ファネル
-│   │   │   ├── reporter/       # 記者エージェント
 │   │   │   └── settings/       # 設定
 │   │   ├── api/                # Route Handlers
 │   │   │   ├── utm/
 │   │   │   ├── metrics/
-│   │   │   ├── stripe/
-│   │   │   └── reporter/
+│   │   │   └── stripe/
 │   │   ├── layout.tsx
 │   │   └── page.tsx            # LP
 │   ├── components/
 │   │   ├── ui/                 # shadcn/ui コンポーネント
 │   │   ├── dashboard/          # ダッシュボード固有コンポーネント
 │   │   ├── utm/                # UTM関連コンポーネント
-│   │   ├── metrics/            # メトリクス関連コンポーネント
-│   │   └── reporter/           # 記者エージェント関連
+│   │   └── metrics/            # メトリクス関連コンポーネント
 │   ├── lib/
 │   │   ├── supabase/           # Supabaseクライアント設定
 │   │   ├── integrations/       # 外部API連携
@@ -59,9 +90,21 @@ hiraku/
 │   │   │   ├── zenn.ts         # Zenn データ取得
 │   │   │   ├── note.ts         # note データ取得
 │   │   │   └── stripe.ts       # Stripe連携
-│   │   ├── utm.ts              # UTMリンク生成ロジック
-│   │   └── reporter.ts         # 記者エージェントロジック
+│   │   └── utm.ts              # UTMリンク生成ロジック
 │   └── types/                  # TypeScript型定義
+├── mcp-server/                 # MCP Server（Claude連携）
+│   ├── src/
+│   │   ├── index.ts            # MCPサーバーエントリポイント
+│   │   ├── tools/              # MCPツール定義
+│   │   │   ├── reporter.ts     # 記者エージェント
+│   │   │   ├── metrics.ts      # メトリクス取得・表示
+│   │   │   ├── utm.ts          # UTMリンク生成
+│   │   │   ├── funnel.ts       # ファネルデータ取得
+│   │   │   └── analytics.ts    # パフォーマンス分析
+│   │   └── lib/
+│   │       └── supabase.ts     # Supabase接続（共有）
+│   ├── package.json
+│   └── tsconfig.json
 ├── supabase/
 │   ├── migrations/             # DBマイグレーション
 │   └── functions/              # Edge Functions（定期実行）
@@ -75,6 +118,71 @@ hiraku/
 
 ---
 
+## MCP Server 設計
+
+Claude Code / claude.ai から利用するMCPツールの一覧。
+
+### ツール一覧
+
+| ツール名 | 説明 | 入力パラメータ | 出力 |
+|----------|------|---------------|------|
+| `create_utm_link` | UTMリンクを生成しSupabaseに保存 | url, source, medium, campaign | 生成されたUTMリンクと短縮URL |
+| `list_utm_links` | UTMリンク一覧を取得 | limit?, campaign? | リンク一覧（クリック数付き） |
+| `get_metrics` | プラットフォーム別メトリクスを取得 | platform?, period?, content_id? | メトリクスの要約テーブル |
+| `get_funnel` | 収益ファネルデータを取得 | period?, campaign? | ファネル各ステップの数値と転換率 |
+| `start_interview` | 記者エージェントのインタビュー開始 | theme | インタビュー質問（5〜8問） |
+| `save_interview_answer` | インタビュー回答を保存 | session_id, answers | 保存確認、追加質問があれば返す |
+| `generate_articles` | インタビューからマルチ形式記事生成 | session_id, formats[] | Zenn/note/X 各形式の下書き |
+| `analyze_performance` | コンテンツパフォーマンスを分析 | platform?, period? | 分析結果と改善提案 |
+| `suggest_post_timing` | 最適投稿時間を提案 | platform | 曜日×時間帯のおすすめ |
+
+### 利用イメージ
+
+```
+ユーザー（Claude Code上）:
+  「今週のZennとXのパフォーマンスを比較して」
+
+Claude（Max内LLM）:
+  → get_metrics(platform: "zenn", period: "7d") を呼び出し
+  → get_metrics(platform: "x", period: "7d") を呼び出し
+  → 両方の結果を自然言語で比較分析して回答
+  （LLM推論はMaxプラン内、MCPサーバーはDB読み取りのみ）
+```
+
+```
+ユーザー（Claude Code上）:
+  「Supabaseの認証機能を実装した体験を記事にしたい」
+
+Claude（Max内LLM）:
+  → start_interview(theme: "Supabaseの認証機能を実装した体験") を呼び出し
+  → 深掘り質問を生成して表示
+  （ユーザーが回答）
+  → save_interview_answer(session_id, answers) で保存
+  → generate_articles(session_id, formats: ["zenn", "note", "x"]) で3形式生成
+  （記事の構造化・リライトはMaxプラン内LLMが実行）
+```
+
+### Claude Code への登録方法
+
+`~/.claude/claude_desktop_config.json` または プロジェクト設定に追加:
+
+```json
+{
+  "mcpServers": {
+    "contentpilot": {
+      "command": "node",
+      "args": ["./mcp-server/dist/index.js"],
+      "env": {
+        "SUPABASE_URL": "...",
+        "SUPABASE_SERVICE_ROLE_KEY": "..."
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Phase 0（P0）: 基盤構築
 
 計測の土台となるUTMリンク管理とデータベース設計。全ての機能はここに依存する。
@@ -84,6 +192,7 @@ hiraku/
 - Next.js プロジェクト作成（App Router, TypeScript, Tailwind CSS）
 - shadcn/ui 導入
 - Supabase プロジェクト接続設定
+- MCP Server プロジェクト作成（`mcp-server/`）
 - ESLint / Prettier 設定
 - 環境変数テンプレート（`.env.example`）作成
 
@@ -198,6 +307,8 @@ create index idx_revenue_user on revenue_events(user_id);
 
 ### P0-4: UTMリンク生成・管理
 
+Web UI と MCP Server の両方からアクセスできるようにする。
+
 **機能:**
 - UTMパラメータ付きリンクの生成フォーム
 - プラットフォーム（source）、媒体（medium）、キャンペーン名を指定
@@ -205,11 +316,23 @@ create index idx_revenue_user on revenue_events(user_id);
 - UTMリンク一覧表示（クリック数付き）
 - リンクごとのクリック推移グラフ
 
-**実装:**
+**Web UI 実装:**
 - `POST /api/utm` — リンク生成
 - `GET /api/utm` — リンク一覧取得
 - `GET /r/[code]` — リダイレクト（クリック記録）
 - UTM管理ダッシュボード画面
+
+**MCP Server 実装:**
+- `create_utm_link` ツール — CLI上から素早くリンク生成
+- `list_utm_links` ツール — リンク一覧・クリック数確認
+
+### P0-5: MCP Server 初期セットアップ
+
+- MCP SDK（`@modelcontextprotocol/sdk`）でサーバー構築
+- Supabase接続の共有ライブラリ
+- `create_utm_link` / `list_utm_links` を最初のツールとして実装
+- Claude Code への登録設定ファイル作成
+- 動作確認テスト
 
 ---
 
@@ -252,34 +375,53 @@ create index idx_revenue_user on revenue_events(user_id);
 - 非公式APIでメトリクス取得（`/api/v2/creators/xxx`）
 - Supabase Edge Function で定期収集（1日1回）
 
-### P1-4: 記者エージェント MVP
+### P1-4: メトリクス MCP ツール
 
-マーケットリサーチの「柱3: 記者エージェント」の最小実装。
+MCPサーバーにメトリクス関連ツールを追加。
+
+**実装:**
+- `get_metrics` ツール — 「今週のZennのPVは？」等の質問にデータで回答
+- 収集済みのSupabaseデータを整形して返す
+- Claude（Maxプラン）が結果を自然言語で分析・比較
+
+### P1-5: 記者エージェント MVP（MCP Server）
+
+マーケットリサーチの「柱3: 記者エージェント」をMCP Serverとして実装。
+**Claude Max のLLMが推論を担当するため、API従量課金なし。**
 
 **フロー:**
-1. ユーザーが「体験テーマ」を入力（例：「Next.jsでブログを作った」）
-2. AIが深掘りインタビュー質問を生成（5〜8問）
-3. ユーザーが回答（音声入力 or テキスト）
-4. AIが回答を構造化し、以下の3形式で下書き生成:
+1. ユーザーがClaude Code上で「体験テーマ」を伝える
+2. Claude（Max LLM）が深掘りインタビュー質問を生成
+3. MCPツールでセッション・回答をSupabaseに保存
+4. Claude（Max LLM）が回答を構造化し、3形式で下書き生成:
    - **Zenn記事（技術記事）**: 2,000〜4,000字の技術ブログ
    - **note記事（エッセイ）**: 1,000〜2,000字の体験共有
    - **X投稿（スレッド）**: 5〜10ツイートのスレッド
+5. MCPツールで生成コンテンツをSupabaseに保存
 
-**実装:**
-- `POST /api/reporter/start` — セッション開始、初期質問生成
-- `POST /api/reporter/answer` — 回答受付、追加質問 or コンテンツ生成
-- `POST /api/reporter/generate` — 3形式のコンテンツ一括生成
-- Claude API（Anthropic SDK）統合
-- インタビュー画面（チャットUI）
-- 生成コンテンツのプレビュー・編集画面
+**MCPツール実装:**
+- `start_interview` — セッション作成、テーマ保存
+- `save_interview_answer` — ユーザー回答の保存
+- `generate_articles` — 生成結果をSupabaseに保存
+  - ※ 記事の構造化・リライト自体はClaude Max LLMが実行
+  - MCPサーバーはデータの保存・取得のみを担当
+
+**従来のAPI方式との比較:**
+```
+従来: ユーザー → Web UI → Claude API呼び出し(有料) → 記事生成 → DB保存
+今回: ユーザー → Claude Code(Max) → MCP Server → DB保存
+                     ↑
+            LLMの推論はMaxに含まれる（追加費用¥0）
+```
 
 ---
 
 ## Phase 2（P2）: ダッシュボード + 収益追跡
 
 データを可視化し、収益との紐付けを実現する。
+ダッシュボードはビジュアル重視のためWeb UIで実装する。
 
-### P2-1: メインダッシュボード
+### P2-1: メインダッシュボード（Web UI）
 
 **表示内容:**
 - 直近7日/30日のプラットフォーム別サマリー
@@ -291,7 +433,7 @@ create index idx_revenue_user on revenue_events(user_id);
 - UTMリンク経由のクリック数サマリー
 
 **実装:**
-- Recharts または Chart.js でグラフ描画
+- Recharts でグラフ描画
 - サーバーコンポーネント + クライアントコンポーネントの適切な分離
 - リアルタイムではなくデイリー更新（Supabaseのデータを参照）
 
@@ -310,7 +452,7 @@ create index idx_revenue_user on revenue_events(user_id);
 - `GET /api/stripe/callback` — OAuth コールバック
 - 収益イベント一覧画面
 
-### P2-3: 収益ファネル可視化
+### P2-3: 収益ファネル可視化（Web UI + MCP Server）
 
 マーケットリサーチの「柱2: 収益ファネルの完全可視化」の実装。
 
@@ -325,44 +467,66 @@ create index idx_revenue_user on revenue_events(user_id);
 購入（Stripe 売上）
 ```
 
-**実装:**
+**Web UI 実装:**
 - ファネルチャート（Sankey ダイアグラムまたはステップ型ファネル）
 - 各ステップ間のコンバージョン率表示
 - 期間フィルター（7日/30日/カスタム）
 - コンテンツ別・キャンペーン別のファネル絞り込み
+
+**MCP Server 実装:**
+- `get_funnel` ツール — 「今月のファネル転換率は？」にデータで回答
+- Claude（Max）が数値を自然言語で解釈し、改善点を提案
 
 ---
 
 ## Phase 3（P3）: 分析・最適化
 
 データが蓄積された後に実装する高度な分析機能。
+分析のLLM推論はMCP Server経由でClaude Maxが担当。
 
-### P3-1: パフォーマンス分析エンジン
+### P3-1: パフォーマンス分析エンジン（MCP Server）
 
 **機能:**
 - コンテンツタイプ別の平均パフォーマンス比較
   - 技術記事 vs エッセイ vs ハウツー 等
 - 投稿曜日・時間帯別のエンゲージメント分析
 - ハッシュタグ / キーワードのパフォーマンス相関
-- 高パフォーマンスコンテンツの共通パターン抽出（Claude API活用）
+- 高パフォーマンスコンテンツの共通パターン抽出
 
-**実装:**
-- 分析ダッシュボード画面
-- Supabase SQL クエリでの集計
-- Claude API で「なぜこの投稿が伸びたか」の自然言語分析
+**MCPツール実装:**
+- `analyze_performance` — Supabaseから集計データを取得
+- Claude（Max）が「なぜこの投稿が伸びたか」を自然言語分析
+- 改善アクションの具体的な提案を生成
 
-### P3-2: 投稿最適化エンジン
+### P3-2: 投稿最適化エンジン（MCP Server + Web UI）
 
 **機能:**
 - 最適投稿時間の提案（曜日 × 時間帯のヒートマップ）
 - 次回投稿の内容提案（過去のパフォーマンスデータ + トレンド分析）
 - A/Bテスト機能（タイトルバリエーションの比較）
-- 定期レポートの自動生成（週次/月次メール）
 
-**実装:**
-- ヒートマップコンポーネント
-- Claude API で最適化提案の生成
-- Supabase Edge Function で週次レポートをメール送信（Resend等）
+**MCPツール実装:**
+- `suggest_post_timing` — 最適投稿タイミングをデータから算出
+- Claude（Max）が過去データと合わせて投稿戦略を提案
+
+**Web UI 実装:**
+- ヒートマップコンポーネント（投稿時間帯の可視化）
+
+---
+
+## 機能の担当分け：Web UI vs MCP Server
+
+| 機能 | Web UI | MCP Server | 理由 |
+|------|--------|------------|------|
+| ダッシュボード | ◎ | — | グラフ・チャートはビジュアル必須 |
+| ファネル可視化 | ◎ | ○ | 図はWeb、分析はMCP |
+| UTMリンク管理 | ◎ | ○ | Web UIで一覧管理、MCPで素早く生成 |
+| メトリクス閲覧 | ○ | ◎ | Webで全体俯瞰、MCPで深掘り質問 |
+| 記者エージェント | — | ◎ | 対話型 → Claude Maxが最適 |
+| パフォーマンス分析 | — | ◎ | LLM推論が中心 → Max内で完結 |
+| 投稿最適化 | ○ | ◎ | ヒートマップはWeb、提案はMCP |
+| 設定・認証 | ◎ | — | OAuthフローはWebが必要 |
+| Stripe連携 | ◎ | — | WebhookはWebサーバーが受信 |
 
 ---
 
@@ -370,10 +534,10 @@ create index idx_revenue_user on revenue_events(user_id);
 
 | フェーズ | 成果物 | 完了条件 |
 |---------|--------|---------|
-| **P0** | プロジェクト基盤、DB、認証、UTMリンク管理 | UTMリンクを生成してクリック計測ができる |
-| **P1** | 3プラットフォームのメトリクス収集、記者AI MVP | 数値が自動収集され、インタビューから3形式の記事を生成できる |
-| **P2** | ダッシュボード、Stripe連携、ファネル可視化 | 認知→信頼→購入のファネルが1画面で見える |
-| **P3** | 分析エンジン、最適化エンジン | データに基づく改善提案が自動で届く |
+| **P0** | プロジェクト基盤、DB、認証、UTMリンク管理、MCP Server初期版 | UTMリンクをWeb UI・Claude Code両方から生成でき、クリック計測ができる |
+| **P1** | 3プラットフォームのメトリクス収集、記者AI MVP | 数値が自動収集され、Claude Code上でインタビュー→3形式の記事を生成できる |
+| **P2** | ダッシュボード、Stripe連携、ファネル可視化 | 認知→信頼→購入のファネルがWebで見え、MCPで深掘り分析できる |
+| **P3** | 分析エンジン、最適化エンジン | Claude Code上でデータに基づく改善提案を受け取れる |
 
 ---
 
@@ -386,11 +550,11 @@ create index idx_revenue_user on revenue_events(user_id);
 | X投稿スケジューリング | **既存ツール** | Buffer（無料プラン） |
 | SNS画像作成 | **既存ツール** | Canva（無料プラン） |
 | アイデア・下書き管理 | **既存ツール** | Notion |
-| UTMリンク管理 | **自作** | ContentPilot |
-| クロスプラットフォーム計測 | **自作** | ContentPilot |
-| 収益ファネル可視化 | **自作** | ContentPilot |
-| 記者エージェント | **自作** | ContentPilot (Claude API) |
-| パフォーマンス分析 | **自作** | ContentPilot |
+| UTMリンク管理 | **自作** | ContentPilot（Web UI + MCP） |
+| クロスプラットフォーム計測 | **自作** | ContentPilot（Web UI + MCP） |
+| 収益ファネル可視化 | **自作** | ContentPilot（Web UI + MCP） |
+| 記者エージェント | **自作** | ContentPilot（MCP Server → Claude Max） |
+| パフォーマンス分析 | **自作** | ContentPilot（MCP Server → Claude Max） |
 
 ---
 
@@ -401,12 +565,15 @@ create index idx_revenue_user on revenue_events(user_id);
 | Supabase | Free | ¥0 |
 | Vercel | Hobby | ¥0 |
 | X API | Free tier | ¥0 |
-| Claude API | 従量課金 | ¥500〜2,000（利用量による） |
+| Claude Max | 契約済み | ¥0（追加費用なし） |
 | Stripe | 決済手数料のみ | 3.6% |
 | ドメイン | 年額 | ¥1,500/年 |
-| **合計** | | **¥500〜2,000/月** |
+| **合計** | | **¥0/月**（ドメイン除く） |
+
+※ Claude APIの従量課金が不要になったため、月額の追加コストは実質ゼロ。
 
 ---
 
-*作成日: 2025年2月13日*
+*作成日: 2026年2月13日*
+*更新日: 2026年2月13日*
 *プロジェクト: ContentPilot (hiraku)*
