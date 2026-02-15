@@ -39,6 +39,7 @@ export default function InterviewsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     const res = await fetch("/api/interviews");
@@ -71,6 +72,13 @@ export default function InterviewsPage() {
     setCreating(false);
   };
 
+  const copyPrompt = (session: InterviewSession) => {
+    const prompt = `「${session.title}」というテーマでインタビューしてください。セッションID: ${session.id}`;
+    navigator.clipboard.writeText(prompt);
+    setCopiedId(session.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   return (
     <>
       <div className="flex items-center justify-between mb-6">
@@ -83,7 +91,7 @@ export default function InterviewsPage() {
             <DialogHeader>
               <DialogTitle>インタビューを開始</DialogTitle>
               <DialogDescription>
-                テーマを入力してセッションを作成します。Claude Code からインタビューを進めてください。
+                テーマを入力してセッションを作成します。作成後、Claude Code でインタビューを進めてください。
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
@@ -115,17 +123,54 @@ export default function InterviewsPage() {
         <p className="text-muted-foreground">読み込み中...</p>
       ) : sessions.length === 0 ? (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">まだセッションがありません</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground">
-              「新規セッション」からテーマを作成し、Claude Code で <code className="bg-muted px-1 py-0.5 rounded text-sm">start_interview</code> を使ってインタビューを始めましょう。
-            </p>
+          <CardContent className="py-10">
+            <div className="max-w-md mx-auto text-center space-y-5">
+              <div className="w-12 h-12 bg-violet-100 rounded-full flex items-center justify-center mx-auto">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-violet-600"
+                >
+                  <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold mb-1">
+                  記者AIで記事を作成
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  テーマを入力してセッションを作成すると、Claude Code
+                  が記者としてインタビューし、Zenn・note・X向けの記事を自動生成します。
+                </p>
+              </div>
+              <div className="text-left bg-muted/50 rounded-lg p-4 space-y-2">
+                <p className="text-xs font-medium">フロー</p>
+                <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
+                  <li>ここでテーマを入力してセッション作成</li>
+                  <li>
+                    Claude Code でセッションIDを伝えてインタビュー開始
+                  </li>
+                  <li>質問に回答すると記事が自動生成される</li>
+                  <li>ここに戻って記事を確認・コピー・投稿</li>
+                </ol>
+              </div>
+            </div>
           </CardContent>
         </Card>
       ) : (
         <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              セッション一覧
+            </CardTitle>
+          </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
@@ -134,6 +179,7 @@ export default function InterviewsPage() {
                   <TableHead>ステータス</TableHead>
                   <TableHead className="text-right">Q&A数</TableHead>
                   <TableHead>作成日</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -148,7 +194,13 @@ export default function InterviewsPage() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={session.status === "completed" ? "default" : "secondary"}>
+                      <Badge
+                        variant={
+                          session.status === "completed"
+                            ? "default"
+                            : "secondary"
+                        }
+                      >
                         {session.status === "completed" ? "完了" : "進行中"}
                       </Badge>
                     </TableCell>
@@ -157,6 +209,22 @@ export default function InterviewsPage() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(session.created_at).toLocaleDateString("ja-JP")}
+                    </TableCell>
+                    <TableCell>
+                      {session.status === "in_progress" &&
+                        (!session.messages ||
+                          session.messages.length === 0) && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => copyPrompt(session)}
+                          >
+                            {copiedId === session.id
+                              ? "コピー済"
+                              : "プロンプトをコピー"}
+                          </Button>
+                        )}
                     </TableCell>
                   </TableRow>
                 ))}

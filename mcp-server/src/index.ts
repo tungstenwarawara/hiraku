@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerUtmTools } from "./tools/utm.js";
 import { registerMetricsTools } from "./tools/metrics.js";
 import { registerReporterTools } from "./tools/reporter.js";
+import { registerAnalyticsTools } from "./tools/analytics.js";
 
 const server = new McpServer({
   name: "contentpilot",
@@ -13,6 +14,7 @@ const server = new McpServer({
 registerUtmTools(server);
 registerMetricsTools(server);
 registerReporterTools(server);
+registerAnalyticsTools(server);
 
 // Start server with stdio transport
 const transport = new StdioServerTransport();
