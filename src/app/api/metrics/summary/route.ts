@@ -32,6 +32,7 @@ export async function GET() {
     { data: profileMetrics },
     { data: previousProfileMetrics },
     { data: profile },
+    { data: profileInfo },
   ] = await Promise.all([
     // Current period metrics (excluding __profile__)
     supabase
@@ -82,6 +83,13 @@ export async function GET() {
     supabase
       .from("profiles")
       .select("last_collected_at")
+      .eq("id", user.id)
+      .single(),
+
+    // Profile info for completeness check
+    supabase
+      .from("profiles")
+      .select("display_name, x_username, zenn_username, note_username")
       .eq("id", user.id)
       .single(),
   ]);
@@ -169,6 +177,24 @@ export async function GET() {
   const totalCurrentLikes = zennCurrent.likes + noteCurrent.likes;
   const totalPreviousLikes = zennPrevious.likes + notePrevious.likes;
 
+  // ─── Analysis: profile completeness + engagement rates ──
+  const profileFields = ["display_name", "x_username", "zenn_username", "note_username"] as const;
+  const filledCount = profileFields.filter(
+    (f) => profileInfo?.[f] && (profileInfo[f] as string).trim() !== ""
+  ).length;
+  const missingFields = profileFields.filter(
+    (f) => !profileInfo?.[f] || (profileInfo[f] as string).trim() === ""
+  );
+
+  const calcEngagementRate = (platform: string) => {
+    const pfMetrics = currentMetrics?.filter(
+      (m) => m.platform === platform && m.metric_type === "likes"
+    ) ?? [];
+    const uniqueArticles = new Set(pfMetrics.map((m) => m.content_id)).size;
+    const totalLikes = pfMetrics.reduce((sum, m) => sum + m.metric_value, 0);
+    return uniqueArticles > 0 ? Math.round((totalLikes / uniqueArticles) * 10) / 10 : 0;
+  };
+
   return NextResponse.json({
     // Funnel: Awareness
     awareness: {
@@ -209,6 +235,17 @@ export async function GET() {
     revenue: {
       totalRevenue: 0,
       message: "Stripe 連携で収益を追跡",
+    },
+
+    // Analysis
+    analysis: {
+      profileCompleteness: {
+        score: filledCount,
+        total: profileFields.length,
+        missing: missingFields as unknown as string[],
+      },
+      zenn: { engagementRate: calcEngagementRate("zenn") },
+      note: { engagementRate: calcEngagementRate("note") },
     },
 
     // Meta

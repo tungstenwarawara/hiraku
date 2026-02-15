@@ -5,27 +5,55 @@ import { getSupabase } from "../lib/supabase.js";
 export function registerReporterTools(server: McpServer) {
   server.tool(
     "start_interview",
-    "記者エージェントのインタビューセッションを開始する",
+    "記者エージェントのインタビューセッションを開始する。Web UIで作成済みのセッションがある場合はsession_idを指定して既存セッションを使用する。",
     {
       user_id: z.string().describe("ユーザーID"),
       theme: z.string().describe("インタビューのテーマ"),
+      session_id: z.string().optional().describe("既存セッションID（Web UIで作成済みの場合）"),
     },
-    async ({ user_id, theme }) => {
+    async ({ user_id, theme, session_id }) => {
       const supabase = getSupabase();
 
-      const { data, error } = await supabase
-        .from("interview_sessions")
-        .insert({
-          user_id,
-          title: theme,
-          status: "in_progress",
-          messages: [],
-        })
-        .select()
-        .single();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let session: any;
 
-      if (error) {
-        return { content: [{ type: "text" as const, text: `Error: ${error.message}` }] };
+      if (session_id) {
+        // Use existing session created from Web UI
+        const { data, error } = await supabase
+          .from("interview_sessions")
+          .select("*")
+          .eq("id", session_id)
+          .eq("user_id", user_id)
+          .single();
+
+        if (error || !data) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: セッション ${session_id} が見つかりません。IDを確認してください。`,
+              },
+            ],
+          };
+        }
+        session = data;
+      } else {
+        // Create new session (backward compatible)
+        const { data, error } = await supabase
+          .from("interview_sessions")
+          .insert({
+            user_id,
+            title: theme,
+            status: "in_progress",
+            messages: [],
+          })
+          .select()
+          .single();
+
+        if (error) {
+          return { content: [{ type: "text" as const, text: `Error: ${error.message}` }] };
+        }
+        session = data;
       }
 
       return {
@@ -34,8 +62,8 @@ export function registerReporterTools(server: McpServer) {
             type: "text" as const,
             text: [
               `インタビューセッションを開始しました。`,
-              `セッションID: ${data.id}`,
-              `テーマ: ${theme}`,
+              `セッションID: ${session.id}`,
+              `テーマ: ${session.title}`,
               ``,
               `このテーマについて深掘りしていきます。`,
               `以下の質問に自由に回答してください。回答はsave_interview_answerツールで保存できます。`,

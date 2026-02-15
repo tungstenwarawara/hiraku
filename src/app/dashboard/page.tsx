@@ -6,6 +6,7 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { MetricsChart } from "@/components/dashboard/metrics-chart";
 import { ContentRanking } from "@/components/dashboard/content-ranking";
 import { CollectionStatus } from "@/components/dashboard/collection-status";
+import ProfileAnalysis from "@/components/dashboard/profile-analysis";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -40,6 +41,15 @@ interface FunnelSummary {
   revenue: {
     totalRevenue: number;
     message: string;
+  };
+  analysis: {
+    profileCompleteness: {
+      score: number;
+      total: number;
+      missing: string[];
+    };
+    zenn: { engagementRate: number };
+    note: { engagementRate: number };
   };
   lastCollectedAt: string | null;
 }
@@ -248,6 +258,13 @@ export default function DashboardPage() {
           />
         </div>
       </FunnelSection>
+
+      {/* Profile Analysis Card */}
+      {summary?.analysis && (
+        <div className="mb-6">
+          <ProfileAnalysis analysis={summary.analysis} />
+        </div>
+      )}
 
       {/* Funnel arrow */}
       <div className="flex justify-center mb-4">
