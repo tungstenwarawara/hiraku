@@ -107,6 +107,9 @@ export default function SettingsPage() {
                 placeholder="username"
               />
             </div>
+            <p className="text-xs text-muted-foreground">
+              x.com/<span className="font-medium">username</span> の部分を入力
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -117,6 +120,9 @@ export default function SettingsPage() {
               onChange={(e) => setProfile({ ...profile, zenn_username: e.target.value })}
               placeholder="username"
             />
+            <p className="text-xs text-muted-foreground">
+              zenn.dev/<span className="font-medium">username</span> の部分を入力
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -127,6 +133,9 @@ export default function SettingsPage() {
               onChange={(e) => setProfile({ ...profile, note_username: e.target.value })}
               placeholder="username"
             />
+            <p className="text-xs text-muted-foreground">
+              note.com/<span className="font-medium">username</span> の部分を入力（表示名ではなくURLのユーザー名）
+            </p>
           </div>
 
           <div className="flex items-center gap-4 pt-4">
