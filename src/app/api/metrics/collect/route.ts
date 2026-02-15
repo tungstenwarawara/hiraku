@@ -33,7 +33,7 @@ export async function POST() {
   const results: Record<string, { success: boolean; count?: number; error?: string }> = {};
 
   // Collect Zenn metrics
-  if (profile.zenn_username) {
+  if (profile.zenn_username?.trim()) {
     try {
       const articles = await fetchZennArticles(profile.zenn_username);
       const { metrics, contents } = zennArticlesToMetrics(user.id, articles);

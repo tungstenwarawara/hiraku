@@ -258,7 +258,7 @@ export function registerMetricsTools(server: McpServer) {
       const results: string[] = ["メトリクス収集結果:"];
 
       // Collect Zenn
-      if (profile.zenn_username) {
+      if (profile.zenn_username?.trim()) {
         try {
           const zennUrl = `https://zenn.dev/api/articles?username=${encodeURIComponent(profile.zenn_username)}&order=latest`;
           const res = await fetch(zennUrl, { headers: { "User-Agent": "ContentPilot-MCP/0.1" } });
