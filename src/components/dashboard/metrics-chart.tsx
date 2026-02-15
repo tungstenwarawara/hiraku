@@ -14,9 +14,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface MetricDataPoint {
   date: string;
-  zenn_likes?: number;
-  zenn_bookmarks?: number;
-  x_likes?: number;
   [key: string]: string | number | undefined;
 }
 
@@ -25,19 +22,30 @@ interface MetricsChartProps {
   title?: string;
 }
 
-const COLORS = {
+const COLORS: Record<string, string> = {
   zenn_likes: "#8b5cf6",
-  zenn_bookmarks: "#10b981",
+  zenn_bookmarks: "#a78bfa",
+  zenn_comments: "#c4b5fd",
+  note_likes: "#10b981",
+  note_comments: "#6ee7b7",
   x_likes: "#3b82f6",
+  x_impressions: "#93c5fd",
 };
 
 const LABELS: Record<string, string> = {
   zenn_likes: "Zenn いいね",
   zenn_bookmarks: "Zenn ブックマーク",
+  zenn_comments: "Zenn コメント",
+  note_likes: "note いいね",
+  note_comments: "note コメント",
   x_likes: "X いいね",
+  x_impressions: "X インプレッション",
 };
 
-export function MetricsChart({ data, title = "メトリクス推移" }: MetricsChartProps) {
+export function MetricsChart({
+  data,
+  title = "エンゲージメント推移",
+}: MetricsChartProps) {
   if (data.length === 0) {
     return (
       <Card>
@@ -46,7 +54,7 @@ export function MetricsChart({ data, title = "メトリクス推移" }: MetricsC
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
-            データがありません。「データ収集」ボタンを押してください。
+            データがありません
           </div>
         </CardContent>
       </Card>
@@ -65,7 +73,10 @@ export function MetricsChart({ data, title = "メトリクス推移" }: MetricsC
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+          <LineChart
+            data={data}
+            margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+          >
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis
               dataKey="date"
@@ -89,15 +100,13 @@ export function MetricsChart({ data, title = "メトリクス推移" }: MetricsC
                 return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
               }}
             />
-            <Legend
-              formatter={(value: string) => LABELS[value] ?? value}
-            />
+            <Legend formatter={(value: string) => LABELS[value] ?? value} />
             {lineKeys.map((key) => (
               <Line
                 key={key}
                 type="monotone"
                 dataKey={key}
-                stroke={COLORS[key as keyof typeof COLORS] ?? "#888"}
+                stroke={COLORS[key] ?? "#888"}
                 strokeWidth={2}
                 dot={false}
                 name={key}

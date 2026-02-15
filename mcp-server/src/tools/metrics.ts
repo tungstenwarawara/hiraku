@@ -296,6 +296,36 @@ export function registerMetricsTools(server: McpServer) {
           }
 
           results.push(`  Zenn: ${articles.length}記事を収集`);
+
+          // 2. Profile metrics (followers, total_likes)
+          try {
+            const profileRes = await fetch(
+              `https://zenn.dev/api/users/${encodeURIComponent(profile.zenn_username)}`,
+              { headers: { "User-Agent": "ContentPilot-MCP/0.1" } }
+            );
+            if (profileRes.ok) {
+              const profileData = await profileRes.json();
+              const zp = profileData.user;
+              const profileMetrics = [
+                { type: "followers", value: zp.follower_count },
+                { type: "total_likes", value: zp.total_liked_count },
+                { type: "articles_count", value: zp.articles_count },
+              ].map((m) => ({
+                user_id,
+                platform: "zenn",
+                content_id: "__profile__",
+                content_url: `https://zenn.dev/${zp.username}`,
+                content_title: `${zp.username} profile`,
+                metric_type: m.type,
+                metric_value: m.value,
+                collected_date: today,
+              }));
+              await supabase.from("metrics").upsert(profileMetrics, { onConflict: "user_id,platform,content_id,metric_type,collected_date" });
+              results.push(`  Zenn profile: フォロワー ${zp.follower_count}`);
+            }
+          } catch {
+            // Non-critical
+          }
         } catch (e) {
           results.push(`  Zenn: エラー - ${e instanceof Error ? e.message : "不明"}`);
         }
@@ -303,18 +333,19 @@ export function registerMetricsTools(server: McpServer) {
         results.push("  Zenn: ユーザー名未設定");
       }
 
-      // Collect note (RSS - articles only)
-      if (profile.note_username) {
+      // Collect note (RSS primary + API supplementary)
+      if (profile.note_username?.trim()) {
         try {
+          const today = new Date().toISOString().split("T")[0];
+
+          // 1. RSS: article list (primary, reliable)
           const rssUrl = `https://note.com/${encodeURIComponent(profile.note_username)}/rss`;
-          const res = await fetch(rssUrl, { headers: { "User-Agent": "ContentPilot-MCP/0.1" } });
+          const rssRes = await fetch(rssUrl, { headers: { "User-Agent": "ContentPilot-MCP/0.1" } });
 
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const xml = await res.text();
-
-          // Simple RSS parsing
+          if (!rssRes.ok) throw new Error(`RSS HTTP ${rssRes.status}`);
+          const xml = await rssRes.text();
           const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-          const contents: Array<Record<string, string>> = [];
+          const rssContents: Array<Record<string, string>> = [];
 
           for (const item of items) {
             const title = item.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1]?.trim() ?? "";
@@ -323,7 +354,7 @@ export function registerMetricsTools(server: McpServer) {
             const idMatch = link.match(/\/n\/([a-zA-Z0-9]+)/);
 
             if (title && link) {
-              contents.push({
+              rssContents.push({
                 user_id,
                 platform: "note",
                 external_id: idMatch ? idMatch[1] : link,
@@ -335,13 +366,56 @@ export function registerMetricsTools(server: McpServer) {
             }
           }
 
-          if (contents.length > 0) {
-            await supabase
-              .from("contents")
-              .upsert(contents, { onConflict: "user_id,platform,external_id" });
+          if (rssContents.length > 0) {
+            await supabase.from("contents").upsert(rssContents, { onConflict: "user_id,platform,external_id" });
+          }
+          results.push(`  note: ${rssContents.length}記事を収集（RSS）`);
+
+          // 2. JSON API: article metrics (supplementary)
+          try {
+            const apiRes = await fetch(
+              `https://note.com/api/v2/creators/${encodeURIComponent(profile.note_username)}/contents?kind=note&page=1`,
+              { headers: { "User-Agent": "ContentPilot-MCP/0.1" } }
+            );
+            if (apiRes.ok) {
+              const apiData = await apiRes.json();
+              const notes = apiData.data?.contents ?? [];
+              const noteMetrics: Array<Record<string, string | number>> = [];
+              for (const n of notes) {
+                const key = n.key ?? String(n.id);
+                const noteUrl = n.noteUrl ?? `https://note.com/${profile.note_username}/n/${key}`;
+                for (const [type, value] of [["likes", n.likeCount ?? 0], ["comments", n.commentCount ?? 0]] as [string, number][]) {
+                  noteMetrics.push({ user_id, platform: "note", content_id: key, content_url: noteUrl, content_title: n.name ?? "", metric_type: type, metric_value: value, collected_date: today });
+                }
+              }
+              if (noteMetrics.length > 0) {
+                await supabase.from("metrics").upsert(noteMetrics, { onConflict: "user_id,platform,content_id,metric_type,collected_date" });
+              }
+              results.push(`  note API: ${notes.length}記事のメトリクス収集`);
+            }
+          } catch {
+            // Non-critical: RSS already saved
           }
 
-          results.push(`  note: ${contents.length}記事を収集（RSS）`);
+          // 3. Profile metrics (supplementary)
+          try {
+            const noteProfileRes = await fetch(
+              `https://note.com/api/v2/creators/${encodeURIComponent(profile.note_username)}`,
+              { headers: { "User-Agent": "ContentPilot-MCP/0.1" } }
+            );
+            if (noteProfileRes.ok) {
+              const noteProfileData = await noteProfileRes.json();
+              const d = noteProfileData.data;
+              const profileMetrics = [
+                { type: "followers", value: d?.followerCount ?? 0 },
+                { type: "articles_count", value: d?.noteCount ?? 0 },
+              ].map((m) => ({ user_id, platform: "note", content_id: "__profile__", content_url: `https://note.com/${profile.note_username}`, content_title: `${profile.note_username} profile`, metric_type: m.type, metric_value: m.value, collected_date: today }));
+              await supabase.from("metrics").upsert(profileMetrics, { onConflict: "user_id,platform,content_id,metric_type,collected_date" });
+              results.push(`  note profile: フォロワー ${d?.followerCount ?? 0}`);
+            }
+          } catch {
+            // Non-critical
+          }
         } catch (e) {
           results.push(`  note: エラー - ${e instanceof Error ? e.message : "不明"}`);
         }

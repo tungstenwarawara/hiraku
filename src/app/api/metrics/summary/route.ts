@@ -1,22 +1,16 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
-interface PlatformSummary {
-  likes: number;
-  bookmarks?: number;
-  comments: number;
-  articles: number;
-  trend: number; // percentage change from previous period
-}
-
 /**
  * GET /api/metrics/summary
- * Returns aggregated summary metrics for the dashboard cards.
- * Compares current 7-day period with previous 7-day period for trend.
+ * Returns funnel-structured summary metrics for the dashboard.
+ * Awareness → Traffic → Engagement → Revenue
  */
 export async function GET() {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -28,48 +22,86 @@ export async function GET() {
   const previousStart = new Date(now);
   previousStart.setDate(previousStart.getDate() - 14);
 
-  // Fetch current period metrics
-  const { data: currentMetrics } = await supabase
-    .from("metrics")
-    .select("platform, metric_type, metric_value, content_id")
-    .eq("user_id", user.id)
-    .gte("collected_date", currentStart.toISOString().split("T")[0]);
+  // ─── Fetch all data in parallel ─────────────────────────
 
-  // Fetch previous period metrics
-  const { data: previousMetrics } = await supabase
-    .from("metrics")
-    .select("platform, metric_type, metric_value, content_id")
-    .eq("user_id", user.id)
-    .gte("collected_date", previousStart.toISOString().split("T")[0])
-    .lt("collected_date", currentStart.toISOString().split("T")[0]);
+  const [
+    { data: currentMetrics },
+    { data: previousMetrics },
+    { data: contentCounts },
+    { data: utmLinks },
+    { data: profileMetrics },
+    { data: previousProfileMetrics },
+    { data: profile },
+  ] = await Promise.all([
+    // Current period metrics (excluding __profile__)
+    supabase
+      .from("metrics")
+      .select("platform, metric_type, metric_value, content_id")
+      .eq("user_id", user.id)
+      .neq("content_id", "__profile__")
+      .gte("collected_date", currentStart.toISOString().split("T")[0]),
 
-  // Fetch content counts per platform
-  const { data: contentCounts } = await supabase
-    .from("contents")
-    .select("platform")
-    .eq("user_id", user.id);
+    // Previous period metrics (excluding __profile__)
+    supabase
+      .from("metrics")
+      .select("platform, metric_type, metric_value, content_id")
+      .eq("user_id", user.id)
+      .neq("content_id", "__profile__")
+      .gte("collected_date", previousStart.toISOString().split("T")[0])
+      .lt("collected_date", currentStart.toISOString().split("T")[0]),
 
-  // Fetch UTM click total
-  const { data: utmLinks } = await supabase
-    .from("utm_links")
-    .select("click_count")
-    .eq("user_id", user.id);
+    // Content counts
+    supabase.from("contents").select("platform").eq("user_id", user.id),
 
-  const totalClicks = utmLinks?.reduce((sum, l) => sum + (l.click_count || 0), 0) ?? 0;
+    // UTM links with details
+    supabase
+      .from("utm_links")
+      .select("click_count, original_url, utm_source, short_code")
+      .eq("user_id", user.id)
+      .order("click_count", { ascending: false })
+      .limit(5),
 
-  // Aggregate by platform
-  const aggregate = (
+    // Latest profile metrics
+    supabase
+      .from("metrics")
+      .select("platform, metric_type, metric_value, collected_date")
+      .eq("user_id", user.id)
+      .eq("content_id", "__profile__")
+      .order("collected_date", { ascending: false }),
+
+    // Previous profile metrics (7+ days ago)
+    supabase
+      .from("metrics")
+      .select("platform, metric_type, metric_value")
+      .eq("user_id", user.id)
+      .eq("content_id", "__profile__")
+      .lte("collected_date", currentStart.toISOString().split("T")[0])
+      .order("collected_date", { ascending: false }),
+
+    // Profile for last_collected_at
+    supabase
+      .from("profiles")
+      .select("last_collected_at")
+      .eq("id", user.id)
+      .single(),
+  ]);
+
+  // ─── Helper: aggregate engagement metrics ───────────────
+
+  const aggregateEngagement = (
     metrics: typeof currentMetrics,
     platform: string
-  ): Omit<PlatformSummary, "trend" | "articles"> => {
-    const platformMetrics = metrics?.filter((m) => m.platform === platform) ?? [];
-    // Get latest value per content per metric_type (most recent snapshot)
+  ) => {
+    const platformMetrics =
+      metrics?.filter((m) => m.platform === platform) ?? [];
     const latestByContent = new Map<string, number>();
 
     for (const m of platformMetrics) {
       const key = `${m.content_id}:${m.metric_type}`;
-      // Take the max value (latest snapshot)
-      latestByContent.set(key, Math.max(latestByContent.get(key) ?? 0, m.metric_value));
+      latestByContent.set(
+        key,
+        Math.max(latestByContent.get(key) ?? 0, m.metric_value)
+      );
     }
 
     let likes = 0;
@@ -90,45 +122,96 @@ export async function GET() {
     return Math.round(((current - previous) / previous) * 100);
   };
 
-  const zennCurrent = aggregate(currentMetrics, "zenn");
-  const zennPrevious = aggregate(previousMetrics, "zenn");
-  const zennArticles = contentCounts?.filter((c) => c.platform === "zenn").length ?? 0;
+  // ─── Extract latest profile values ──────────────────────
 
-  const noteCurrent = aggregate(currentMetrics, "note");
-  const noteArticles = contentCounts?.filter((c) => c.platform === "note").length ?? 0;
+  const getLatestProfileValue = (
+    platform: string,
+    metricType: string
+  ): number => {
+    const match = profileMetrics?.find(
+      (m) => m.platform === platform && m.metric_type === metricType
+    );
+    return match?.metric_value ?? 0;
+  };
 
-  const xCurrent = aggregate(currentMetrics, "x");
-  const xPrevious = aggregate(previousMetrics, "x");
+  const getPreviousProfileValue = (
+    platform: string,
+    metricType: string
+  ): number => {
+    const match = previousProfileMetrics?.find(
+      (m) => m.platform === platform && m.metric_type === metricType
+    );
+    return match?.metric_value ?? 0;
+  };
 
-  // Get profile for last_collected_at
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("last_collected_at")
-    .eq("id", user.id)
-    .single();
+  // ─── Compute funnel data ────────────────────────────────
+
+  // Awareness
+  const zennFollowers = getLatestProfileValue("zenn", "followers");
+  const noteFollowers = getLatestProfileValue("note", "followers");
+  const prevZennFollowers = getPreviousProfileValue("zenn", "followers");
+  const prevNoteFollowers = getPreviousProfileValue("note", "followers");
+  const zennArticles =
+    contentCounts?.filter((c) => c.platform === "zenn").length ?? 0;
+  const noteArticles =
+    contentCounts?.filter((c) => c.platform === "note").length ?? 0;
+
+  // Traffic
+  const totalClicks =
+    utmLinks?.reduce((sum, l) => sum + (l.click_count || 0), 0) ?? 0;
+
+  // Engagement
+  const zennCurrent = aggregateEngagement(currentMetrics, "zenn");
+  const zennPrevious = aggregateEngagement(previousMetrics, "zenn");
+  const noteCurrent = aggregateEngagement(currentMetrics, "note");
+  const notePrevious = aggregateEngagement(previousMetrics, "note");
+
+  const totalCurrentLikes = zennCurrent.likes + noteCurrent.likes;
+  const totalPreviousLikes = zennPrevious.likes + notePrevious.likes;
 
   return NextResponse.json({
-    zenn: {
-      likes: zennCurrent.likes,
-      bookmarks: zennCurrent.bookmarks,
-      comments: zennCurrent.comments,
-      articles: zennArticles,
-      trend: calcTrend(zennCurrent.likes, zennPrevious.likes),
+    // Funnel: Awareness
+    awareness: {
+      zennFollowers,
+      noteFollowers,
+      totalArticles: zennArticles + noteArticles,
+      zennArticles,
+      noteArticles,
+      followerTrend:
+        zennFollowers +
+        noteFollowers -
+        (prevZennFollowers + prevNoteFollowers),
     },
-    note: {
-      articles: noteArticles,
-      likes: noteCurrent.likes,
-      comments: noteCurrent.comments,
-      trend: 0, // No metrics available via RSS
+
+    // Funnel: Traffic
+    traffic: {
+      utmTotalClicks: totalClicks,
+      utmTopLinks:
+        utmLinks?.map((l) => ({
+          url: l.original_url,
+          source: l.utm_source,
+          clicks: l.click_count,
+          code: l.short_code,
+        })) ?? [],
     },
-    x: {
-      likes: xCurrent.likes,
-      comments: xCurrent.comments,
-      trend: calcTrend(xCurrent.likes, xPrevious.likes),
+
+    // Funnel: Engagement
+    engagement: {
+      zennLikes: zennCurrent.likes,
+      zennBookmarks: zennCurrent.bookmarks ?? 0,
+      zennComments: zennCurrent.comments,
+      noteLikes: noteCurrent.likes,
+      noteComments: noteCurrent.comments,
+      engagementTrend: calcTrend(totalCurrentLikes, totalPreviousLikes),
     },
-    utm: {
-      totalClicks,
+
+    // Funnel: Revenue (placeholder)
+    revenue: {
+      totalRevenue: 0,
+      message: "Stripe 連携で収益を追跡",
     },
+
+    // Meta
     lastCollectedAt: profile?.last_collected_at ?? null,
   });
 }
