@@ -35,6 +35,12 @@ export async function fetchZennArticles(
   username: string,
   maxPages = 5
 ): Promise<ZennArticle[]> {
+  // Guard: empty username causes Zenn API to return ALL users' articles
+  if (!username || !username.trim()) {
+    console.warn("fetchZennArticles: username is empty, skipping API call");
+    return [];
+  }
+
   const articles: ZennArticle[] = [];
   let page = 1;
 
