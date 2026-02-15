@@ -9,6 +9,7 @@ import type { User } from "@supabase/supabase-js";
 const navItems = [
   { href: "/dashboard", label: "ダッシュボード" },
   { href: "/dashboard/metrics", label: "メトリクス" },
+  { href: "/dashboard/interviews", label: "記者AI" },
   { href: "/dashboard/utm", label: "UTMリンク" },
   { href: "/dashboard/settings", label: "設定" },
 ];
@@ -35,7 +36,9 @@ export function DashboardNav({ user }: { user: User }) {
                 key={item.href}
                 href={item.href}
                 className={
-                  pathname === item.href
+                  (item.href === "/dashboard"
+                    ? pathname === item.href
+                    : pathname.startsWith(item.href))
                     ? "text-foreground font-medium"
                     : "text-muted-foreground hover:text-foreground transition-colors"
                 }
