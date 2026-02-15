@@ -51,9 +51,10 @@ export default function MetricsPage() {
         if (res.ok) {
           const metrics: MetricRow[] = await res.json();
 
-          // Process chart data
+          // Process chart data (exclude __profile__ metrics)
           const byDate = new Map<string, ChartDataPoint>();
           for (const m of metrics) {
+            if (m.content_id === "__profile__") continue;
             const date = m.collected_date;
             if (!byDate.has(date)) byDate.set(date, { date });
             const point = byDate.get(date)!;
@@ -65,9 +66,10 @@ export default function MetricsPage() {
           );
           setChartData(sorted);
 
-          // Process content ranking
+          // Process content ranking (exclude __profile__ metrics)
           const contentMap = new Map<string, ContentItem>();
           for (const m of metrics) {
+            if (m.content_id === "__profile__") continue;
             const key = `${m.platform}:${m.content_id}`;
             if (!contentMap.has(key)) {
               contentMap.set(key, {

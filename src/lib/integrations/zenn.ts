@@ -3,6 +3,7 @@
  *
  * Fetches article data from Zenn's public API.
  * Available metrics: liked_count, bookmarked_count, comments_count
+ * Profile metrics: follower_count, total_liked_count, articles_count
  * Note: PV data is NOT available via public API.
  */
 
@@ -157,4 +158,75 @@ export function zennArticlesToMetrics(
   }
 
   return { metrics, contents };
+}
+
+// ─── Profile API ───────────────────────────────────────────
+
+export interface ZennProfile {
+  username: string;
+  name: string;
+  bio: string;
+  follower_count: number;
+  following_count: number;
+  total_liked_count: number;
+  articles_count: number;
+  books_count: number;
+}
+
+/**
+ * Fetch Zenn user profile (follower count, total likes, etc.)
+ */
+export async function fetchZennProfile(
+  username: string
+): Promise<ZennProfile> {
+  if (!username || !username.trim()) {
+    throw new Error("fetchZennProfile: username is empty");
+  }
+
+  const url = `https://zenn.dev/api/users/${encodeURIComponent(username.trim())}`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "ContentPilot/0.1" },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Zenn user API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data.user as ZennProfile;
+}
+
+/**
+ * Convert Zenn profile data to metrics format (content_id = "__profile__")
+ */
+export function zennProfileToMetrics(
+  userId: string,
+  profile: ZennProfile
+): Array<{
+  user_id: string;
+  platform: string;
+  content_id: string;
+  content_url: string;
+  content_title: string;
+  metric_type: string;
+  metric_value: number;
+  collected_date: string;
+}> {
+  const today = new Date().toISOString().split("T")[0];
+  const profileUrl = `https://zenn.dev/${profile.username}`;
+
+  return [
+    { type: "followers", value: profile.follower_count },
+    { type: "total_likes", value: profile.total_liked_count },
+    { type: "articles_count", value: profile.articles_count },
+  ].map((m) => ({
+    user_id: userId,
+    platform: "zenn",
+    content_id: "__profile__",
+    content_url: profileUrl,
+    content_title: `${profile.username} profile`,
+    metric_type: m.type,
+    metric_value: m.value,
+    collected_date: today,
+  }));
 }
