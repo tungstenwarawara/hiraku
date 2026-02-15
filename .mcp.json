@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "contentpilot": {
+      "command": "node",
+      "args": ["./mcp-server/dist/index.js"],
+      "env": {
+        "SUPABASE_URL": "",
+        "SUPABASE_SERVICE_ROLE_KEY": ""
+      }
+    }
+  }
+}

@@ -8,6 +8,7 @@ import type { User } from "@supabase/supabase-js";
 
 const navItems = [
   { href: "/dashboard", label: "ダッシュボード" },
+  { href: "/dashboard/metrics", label: "メトリクス" },
   { href: "/dashboard/utm", label: "UTMリンク" },
   { href: "/dashboard/settings", label: "設定" },
 ];
