@@ -134,4 +134,230 @@ export function registerMetricsTools(server: McpServer) {
       return { content: [{ type: "text" as const, text }] };
     }
   );
+
+  // import_metrics: Manual import for X or other platform data
+  server.tool(
+    "import_metrics",
+    "メトリクスを手動でインポートする（X のデータなど、API で取得できないもの）",
+    {
+      user_id: z.string().describe("ユーザーID"),
+      platform: z.string().describe("プラットフォーム (x, zenn, note)"),
+      entries: z
+        .array(
+          z.object({
+            content_id: z.string().describe("コンテンツID（ツイートIDや記事スラッグ）"),
+            content_title: z.string().optional().describe("コンテンツのタイトル"),
+            content_url: z.string().optional().describe("コンテンツのURL"),
+            impressions: z.number().optional().describe("インプレッション数"),
+            likes: z.number().optional().describe("いいね数"),
+            retweets: z.number().optional().describe("リツイート数"),
+            replies: z.number().optional().describe("リプライ数"),
+            views: z.number().optional().describe("PV数"),
+            bookmarks: z.number().optional().describe("ブックマーク数"),
+            comments: z.number().optional().describe("コメント数"),
+          })
+        )
+        .describe("インポートするメトリクスのリスト"),
+    },
+    async ({ user_id, platform, entries }) => {
+      const supabase = getSupabase();
+      const today = new Date().toISOString().split("T")[0];
+
+      const metrics: Array<{
+        user_id: string;
+        platform: string;
+        content_id: string;
+        content_title: string;
+        content_url: string;
+        metric_type: string;
+        metric_value: number;
+        collected_date: string;
+      }> = [];
+
+      for (const entry of entries) {
+        const metricTypes: Array<{ type: string; value: number | undefined }> = [
+          { type: "impressions", value: entry.impressions },
+          { type: "likes", value: entry.likes },
+          { type: "retweets", value: entry.retweets },
+          { type: "replies", value: entry.replies },
+          { type: "views", value: entry.views },
+          { type: "bookmarks", value: entry.bookmarks },
+          { type: "comments", value: entry.comments },
+        ];
+
+        for (const m of metricTypes) {
+          if (m.value !== undefined && m.value > 0) {
+            metrics.push({
+              user_id,
+              platform,
+              content_id: entry.content_id,
+              content_title: entry.content_title ?? "",
+              content_url: entry.content_url ?? "",
+              metric_type: m.type,
+              metric_value: m.value,
+              collected_date: today,
+            });
+          }
+        }
+      }
+
+      if (metrics.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "インポートするメトリクスがありません。" }],
+        };
+      }
+
+      const { error } = await supabase
+        .from("metrics")
+        .upsert(metrics, {
+          onConflict: "user_id,platform,content_id,metric_type,collected_date",
+        });
+
+      if (error) {
+        return {
+          content: [{ type: "text" as const, text: `インポートエラー: ${error.message}` }],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${entries.length}件のコンテンツから${metrics.length}件のメトリクスをインポートしました。`,
+          },
+        ],
+      };
+    }
+  );
+
+  // collect_metrics: Trigger Zenn/note data collection
+  server.tool(
+    "collect_metrics",
+    "Zenn・note からメトリクスを自動収集する（設定済みのユーザー名が必要）",
+    {
+      user_id: z.string().describe("ユーザーID"),
+    },
+    async ({ user_id }) => {
+      const supabase = getSupabase();
+
+      // Get profile
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("zenn_username, note_username")
+        .eq("id", user_id)
+        .single();
+
+      if (profileError || !profile) {
+        return {
+          content: [
+            { type: "text" as const, text: "プロフィールが見つかりません。設定ページでユーザー名を登録してください。" },
+          ],
+        };
+      }
+
+      const results: string[] = ["メトリクス収集結果:"];
+
+      // Collect Zenn
+      if (profile.zenn_username) {
+        try {
+          const zennUrl = `https://zenn.dev/api/articles?username=${encodeURIComponent(profile.zenn_username)}&order=latest`;
+          const res = await fetch(zennUrl, { headers: { "User-Agent": "ContentPilot-MCP/0.1" } });
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          const articles = data.articles || [];
+
+          const today = new Date().toISOString().split("T")[0];
+          const metrics: Array<Record<string, string | number>> = [];
+
+          for (const article of articles) {
+            for (const [type, value] of [
+              ["likes", article.liked_count],
+              ["bookmarks", article.bookmarked_count],
+              ["comments", article.comments_count],
+            ] as [string, number][]) {
+              metrics.push({
+                user_id,
+                platform: "zenn",
+                content_id: article.slug,
+                content_url: `https://zenn.dev${article.path}`,
+                content_title: article.title,
+                metric_type: type,
+                metric_value: value,
+                collected_date: today,
+              });
+            }
+          }
+
+          if (metrics.length > 0) {
+            await supabase
+              .from("metrics")
+              .upsert(metrics, { onConflict: "user_id,platform,content_id,metric_type,collected_date" });
+          }
+
+          results.push(`  Zenn: ${articles.length}記事を収集`);
+        } catch (e) {
+          results.push(`  Zenn: エラー - ${e instanceof Error ? e.message : "不明"}`);
+        }
+      } else {
+        results.push("  Zenn: ユーザー名未設定");
+      }
+
+      // Collect note (RSS - articles only)
+      if (profile.note_username) {
+        try {
+          const rssUrl = `https://note.com/${encodeURIComponent(profile.note_username)}/rss`;
+          const res = await fetch(rssUrl, { headers: { "User-Agent": "ContentPilot-MCP/0.1" } });
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const xml = await res.text();
+
+          // Simple RSS parsing
+          const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+          const contents: Array<Record<string, string>> = [];
+
+          for (const item of items) {
+            const title = item.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1]?.trim() ?? "";
+            const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() ?? "";
+            const pubDate = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]?.trim() ?? "";
+            const idMatch = link.match(/\/n\/([a-zA-Z0-9]+)/);
+
+            if (title && link) {
+              contents.push({
+                user_id,
+                platform: "note",
+                external_id: idMatch ? idMatch[1] : link,
+                title,
+                url: link,
+                published_at: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
+                status: "published",
+              });
+            }
+          }
+
+          if (contents.length > 0) {
+            await supabase
+              .from("contents")
+              .upsert(contents, { onConflict: "user_id,platform,external_id" });
+          }
+
+          results.push(`  note: ${contents.length}記事を収集（RSS）`);
+        } catch (e) {
+          results.push(`  note: エラー - ${e instanceof Error ? e.message : "不明"}`);
+        }
+      } else {
+        results.push("  note: ユーザー名未設定");
+      }
+
+      // Update last_collected_at
+      await supabase
+        .from("profiles")
+        .update({ last_collected_at: new Date().toISOString() })
+        .eq("id", user_id);
+
+      return {
+        content: [{ type: "text" as const, text: results.join("\n") }],
+      };
+    }
+  );
 }
